@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request
-from models import db, Planet, User, planet_schema, planets_schema, Validation
+from models import db, Planet, User, planet_schema, user_schema, users_schema, planets_schema, Validation
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
+from marshmallow import ValidationError
 
 main_routes = Blueprint('main_routes', __name__)
 auth_routes = Blueprint('auth_routes', __name__)
@@ -98,24 +99,29 @@ def remove_planet(planet_id: int):
 
 @main_routes.route('/register', methods=['POST'])
 def register():
-    email = request.form['email']
-    if not Validation.is_valid_email(email):
-        return jsonify(message="Invalid mail format")
+    try:
+        # Convert MultiDict to regular dict
+        user_data = user_schema.load(request.form.to_dict())
 
-    test = User.query.filter_by(email=email).first()
-    if test:
-        return jsonify(message="That email already exists."), 409
-    else:
-        first_name = request.form['first_name']
-        last_name = request.form['last_name']
-        password = request.form['password']
-        if Validation.is_valid_name(first_name) and Validation.is_valid_name(last_name) and Validation.is_valid_password(password):
-            user = User(first_name=first_name, last_name=last_name, email=email, password=password)
-            db.session.add(user)
-            db.session.commit()
-            return jsonify(message='User created successfully!'), 201
-        else:
-            return jsonify(message="Invalid name or weak password"), 400
+        # Check if user already exists
+        user = User.query.filter_by(email=user_data["email"]).first()
+        if user:
+            return jsonify(message="That email already exists."), 409
+
+        # Create and add new user
+        new_user = User(
+            first_name=user_data["first_name"],
+            last_name=user_data["last_name"],
+            email=user_data["email"],
+            password=user_data["password"]
+        )
+        db.session.add(new_user)
+        db.session.commit()
+
+        return jsonify(message='User created successfully!'), 201
+
+    except ValidationError as err:
+        return jsonify(message="Validation failed", errors=err.messages), 400
 
 
 # -----------------------------Auth Routes--------------------------------------------------
@@ -140,55 +146,57 @@ def login():
 @auth_routes.route('/update_user', methods=['PUT'])
 @jwt_required()
 def update_user():
-    user_id = int(request.form['user_id'])
-    user = User.query.filter_by(user_id=user_id).first()
-    if user:
-        first_name = request.form['first_name']
-        last_name = request.form['last_name']
-        password = request.form['password']
-        if Validation.is_valid_name(first_name) and Validation.is_valid_name(
-                last_name) and Validation.is_valid_password(password):
-            user.first_name = first_name
-            user.last_name = last_name
-            user.password = password
+    try:
+        email = get_jwt_identity()
+        user = User.query.filter_by(email=email).first()
+
+        if user:
+            updated_data = user_schema.load(request.form)
+            user.first_name = updated_data.first_name
+            user.last_name = updated_data.last_name
+            user.email = updated_data.email
+            user.password = updated_data.password
+
             db.session.commit()
-            return jsonify(message="You updated a user"), 202
+            return jsonify(message="User updated successfully"), 202
         else:
-            return jsonify(message="Invalid name or weak password"), 400
-    else:
-        return jsonify(message="That user does not exist"), 404
+            return jsonify(message="That user does not exist"), 404
+
+    except ValidationError as err:
+        return jsonify(message="Validation failed", errors=err.messages), 400
 
 
 @auth_routes.route('/change_password', methods=['PATCH'])
 @jwt_required()
 def change_password():
-    current_user_email = get_jwt_identity()
-    user = User.query.filter_by(email=current_user_email).first()
+    try:
+        current_user_email = get_jwt_identity()
+        user = User.query.filter_by(email=current_user_email).first()
 
-    if not user:
-        return jsonify(message="User not found"), 404
+        if not user:
+            return jsonify(message="User not found"), 404
 
-    new_password = request.form['password']
-    if not new_password:
-        return jsonify(message="Password is required"), 400
+        new_password = request.form['password']
+        if not new_password:
+            return jsonify(message="Password is required"), 400
 
-    if not Validation.is_valid_password(new_password):
-        return jsonify(
-            message="Password must be at least 8 characters and include uppercase, lowercase, number, and special character"), 400
+        user_schema.load({'password': new_password}, partial=("first_name", "last_name", "email"))
 
-    user.password = new_password
-    db.session.commit()
-    return jsonify(message="Password updated successfully"), 200
+        user.password = new_password
+        db.session.commit()
+        return jsonify(message="Password updated successfully"), 200
+
+    except ValidationError as err:
+        return jsonify(message="Validation failed", errors=err.messages), 400
 
 
 @auth_routes.route('/remove_user/<int:user_id>', methods=['DELETE'])
 @jwt_required()
 def remove_user(user_id: int):
-    user = User.query.filter_by(user_id = user_id).first()
+    user = User.query.filter_by(id=user_id).first()
     if user:
         db.session.delete(user)
         db.session.commit()
         return jsonify(message="You deleted a user"), 202
     else:
         return jsonify(message="That user does not exist"), 404
-
