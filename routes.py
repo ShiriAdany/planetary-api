@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
-from models import db, Planet, User, planet_schema, planets_schema
-from flask_jwt_extended import JWTManager, jwt_required, create_access_token
+from models import db, Planet, User, planet_schema, planets_schema, Validation
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 
 main_routes = Blueprint('main_routes', __name__)
 auth_routes = Blueprint('auth_routes', __name__)
@@ -8,12 +8,7 @@ auth_routes = Blueprint('auth_routes', __name__)
 
 @main_routes.route('/')
 def hello():
-    return "Hello, Flask!"
-
-
-@main_routes.route('/super_simple')
-def super_simple():
-    return jsonify(message="Hello from the Planetary API")
+    return "Hello, Astronauts!"
 
 
 @main_routes.route('/parameters')
@@ -104,6 +99,9 @@ def remove_planet(planet_id: int):
 @main_routes.route('/register', methods=['POST'])
 def register():
     email = request.form['email']
+    if not Validation.is_valid_email(email):
+        return jsonify(message="Invalid mail format")
+
     test = User.query.filter_by(email=email).first()
     if test:
         return jsonify(message="That email already exists."), 409
@@ -111,10 +109,13 @@ def register():
         first_name = request.form['first_name']
         last_name = request.form['last_name']
         password = request.form['password']
-        user = User(first_name=first_name, last_name=last_name, email=email, password=password)
-        db.session.add(user)
-        db.session.commit()
-        return jsonify(message='User created successfully!'), 201
+        if Validation.is_valid_name(first_name) and Validation.is_valid_name(last_name) and Validation.is_valid_password(password):
+            user = User(first_name=first_name, last_name=last_name, email=email, password=password)
+            db.session.add(user)
+            db.session.commit()
+            return jsonify(message='User created successfully!'), 201
+        else:
+            return jsonify(message="Invalid name or weak password"), 400
 
 
 # -----------------------------Auth Routes--------------------------------------------------
@@ -134,3 +135,60 @@ def login():
         return jsonify(message='Login succeeded!', access_token=access_token)
     else:
         return jsonify(message="Bad email or password"), 401
+
+
+@auth_routes.route('/update_user', methods=['PUT'])
+@jwt_required()
+def update_user():
+    user_id = int(request.form['user_id'])
+    user = User.query.filter_by(user_id=user_id).first()
+    if user:
+        first_name = request.form['first_name']
+        last_name = request.form['last_name']
+        password = request.form['password']
+        if Validation.is_valid_name(first_name) and Validation.is_valid_name(
+                last_name) and Validation.is_valid_password(password):
+            user.first_name = first_name
+            user.last_name = last_name
+            user.password = password
+            db.session.commit()
+            return jsonify(message="You updated a user"), 202
+        else:
+            return jsonify(message="Invalid name or weak password"), 400
+    else:
+        return jsonify(message="That user does not exist"), 404
+
+
+@auth_routes.route('/change_password', methods=['PATCH'])
+@jwt_required()
+def change_password():
+    current_user_email = get_jwt_identity()
+    user = User.query.filter_by(email=current_user_email).first()
+
+    if not user:
+        return jsonify(message="User not found"), 404
+
+    new_password = request.form['password']
+    if not new_password:
+        return jsonify(message="Password is required"), 400
+
+    if not Validation.is_valid_password(new_password):
+        return jsonify(
+            message="Password must be at least 8 characters and include uppercase, lowercase, number, and special character"), 400
+
+    user.password = new_password
+    db.session.commit()
+    return jsonify(message="Password updated successfully"), 200
+
+
+@auth_routes.route('/remove_user/<int:user_id>', methods=['DELETE'])
+@jwt_required()
+def remove_user(user_id: int):
+    user = User.query.filter_by(user_id = user_id).first()
+    if user:
+        db.session.delete(user)
+        db.session.commit()
+        return jsonify(message="You deleted a user"), 202
+    else:
+        return jsonify(message="That user does not exist"), 404
+
